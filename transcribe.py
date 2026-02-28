@@ -1,11 +1,12 @@
 import os
+import json
 import torch
 import argparse
 import re
+import librosa
 from transformers import pipeline
 from pyannote.audio import Pipeline as DiarizationPipeline
 from pathlib import Path
-import librosa
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -124,27 +125,43 @@ def transcribe(audio_path: str, hf_token: str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    # ── Step 1: Transcription ─────────────────────────────────────────────────
-    print("\n[1/4] Loading Whisper Large V3 model...")
-    asr_pipe = pipeline(
-        "automatic-speech-recognition",
-        model="openai/whisper-large-v3",
-        device=device,
-    )
+    input_filename = Path(audio_path).stem
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    cache_path = output_dir / f"{input_filename}_asr_cache.json"
 
-    print(f"[1/4] Loading audio file: {audio_path}")
-    audio_array, sampling_rate = librosa.load(audio_path, sr=16000, mono=True)
-    print(f"[1/4] Transcribing ({len(audio_array)/sampling_rate/3600:.1f} hours of audio)...")
-    asr_result = asr_pipe(
-        {"raw": audio_array, "sampling_rate": sampling_rate},
-        return_timestamps=True,
-    )
+    # ── Step 1: Transcription (with checkpointing) ────────────────────────────
+    if cache_path.exists():
+        print(f"\n[1/4] Found cached transcription — skipping ASR step.")
+        print(f"      Delete {cache_path} to force re-transcription.")
+        with open(cache_path, "r", encoding="utf-8") as f:
+            asr_result = json.load(f)
+    else:
+        print("\n[1/4] Loading Whisper Large V3 model...")
+        asr_pipe = pipeline(
+            "automatic-speech-recognition",
+            model="openai/whisper-large-v3",
+            device=device,
+        )
+
+        print(f"[1/4] Loading audio file: {audio_path}")
+        audio_array, sampling_rate = librosa.load(audio_path, sr=16000, mono=True)
+        print(f"[1/4] Transcribing ({len(audio_array)/sampling_rate/3600:.1f} hours of audio)...")
+        asr_result = asr_pipe(
+            {"raw": audio_array, "sampling_rate": sampling_rate},
+            return_timestamps=True,
+            generate_kwargs={"language": "en"},
+        )
+
+        print(f"[1/4] Transcription complete — saving cache to {cache_path}")
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(asr_result, f, ensure_ascii=False, indent=2)
 
     # ── Step 2: Diarisation ───────────────────────────────────────────────────
     print("\n[2/4] Loading speaker diarisation model...")
     diarization_pipeline = DiarizationPipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
+        token=hf_token,
     )
     diarization_pipeline.to(torch.device(device))
 
@@ -170,9 +187,7 @@ def transcribe(audio_path: str, hf_token: str):
 
     transcript = format_transcript(merged, speaker_names)
 
-    input_filename = Path(audio_path).stem
-    output_path = Path("output") / f"{input_filename}_diarised.txt"
-    output_path.parent.mkdir(exist_ok=True)
+    output_path = output_dir / f"{input_filename}_diarised.txt"
     output_path.write_text(transcript, encoding="utf-8")
 
     print(f"\nTranscription complete. Saved to: {output_path}")
