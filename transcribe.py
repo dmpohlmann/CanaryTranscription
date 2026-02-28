@@ -161,7 +161,7 @@ def transcribe(audio_path: str, hf_token: str):
     print("\n[2/4] Loading speaker diarisation model...")
     diarization_pipeline = DiarizationPipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        token=hf_token,
+        use_auth_token=hf_token,
     )
     diarization_pipeline.to(torch.device(device))
 
