@@ -5,6 +5,7 @@ import re
 from transformers import pipeline
 from pyannote.audio import Pipeline as DiarizationPipeline
 from pathlib import Path
+import librosa
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -131,9 +132,11 @@ def transcribe(audio_path: str, hf_token: str):
         device=device,
     )
 
-    print(f"[1/4] Transcribing: {audio_path}")
+    print(f"[1/4] Loading audio file: {audio_path}")
+    audio_array, sampling_rate = librosa.load(audio_path, sr=16000, mono=True)
+    print(f"[1/4] Transcribing ({len(audio_array)/sampling_rate/3600:.1f} hours of audio)...")
     asr_result = asr_pipe(
-        audio_path,
+        {"raw": audio_array, "sampling_rate": sampling_rate},
         return_timestamps=True,
     )
 
