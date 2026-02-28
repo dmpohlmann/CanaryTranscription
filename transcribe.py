@@ -134,8 +134,6 @@ def transcribe(audio_path: str, hf_token: str):
     print(f"[1/4] Transcribing: {audio_path}")
     asr_result = asr_pipe(
         audio_path,
-        chunk_length_s=30,
-        stride_length_s=5,
         return_timestamps=True,
     )
 
