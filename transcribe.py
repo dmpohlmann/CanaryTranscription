@@ -4,8 +4,10 @@ import torch
 import argparse
 import re
 import librosa
+import numpy as np
 from transformers import pipeline
 from pyannote.audio import Pipeline as DiarizationPipeline
+from pyannote.core import Segment
 from pathlib import Path
 
 
@@ -165,8 +167,19 @@ def transcribe(audio_path: str, hf_token: str):
     )
     diarization_pipeline.to(torch.device(device))
 
+    # Load audio with librosa and pass as in-memory waveform to avoid
+    # pyannote's AudioDecoder (which requires torchcodec + FFmpeg .so files).
+    print(f"[2/4] Loading audio for diarisation: {audio_path}")
+    waveform_np, sr = librosa.load(audio_path, sr=16000, mono=True)
+    waveform_tensor = torch.from_numpy(waveform_np).unsqueeze(0)  # (1, samples)
+    diarization_input = {
+        "waveform": waveform_tensor,
+        "sample_rate": sr,
+        "uri": Path(audio_path).stem,
+    }
+
     print("[2/4] Running diarisation (this may take a while for long audio)...")
-    diarization = diarization_pipeline(audio_path)
+    diarization = diarization_pipeline(diarization_input)
 
     # ── Step 3: Merge ─────────────────────────────────────────────────────────
     print("\n[3/4] Merging transcript with speaker labels...")
