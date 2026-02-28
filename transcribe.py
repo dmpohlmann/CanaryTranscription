@@ -10,6 +10,11 @@ from pyannote.audio import Pipeline as DiarizationPipeline
 from pyannote.core import Segment
 from pathlib import Path
 
+# PyTorch 2.6+ defaults torch.load to weights_only=True, which blocks
+# older model checkpoints that contain classes like TorchVersion.
+# Allowlist them so pyannote can load its segmentation model.
+torch.serialization.add_safe_globals([torch.torch_version.TorchVersion])
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
