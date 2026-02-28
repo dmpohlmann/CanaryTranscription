@@ -161,10 +161,18 @@ def transcribe(audio_path: str, hf_token: str):
 
     # ── Step 2: Diarisation ───────────────────────────────────────────────────
     print("\n[2/4] Loading speaker diarisation model...")
-    diarization_pipeline = DiarizationPipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
-    )
+    try:
+        # pyannote.audio 4.x
+        diarization_pipeline = DiarizationPipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=hf_token,
+        )
+    except TypeError:
+        # pyannote.audio 3.x
+        diarization_pipeline = DiarizationPipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token,
+        )
     diarization_pipeline.to(torch.device(device))
 
     # Load audio with librosa and pass as in-memory waveform to avoid
