@@ -4,7 +4,8 @@
       "Bash(git:*)",
       "Bash(tee:*)",
       "mcp__claude_ai_Hugging_Face__hub_repo_details",
-      "mcp__claude_ai_Hugging_Face__hf_whoami"
+      "mcp__claude_ai_Hugging_Face__hf_whoami",
+      "WebSearch"
     ]
   },
   "outputStyle": "Explanatory"
