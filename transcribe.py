@@ -194,6 +194,10 @@ def transcribe(audio_path: str, hf_token: str):
     print("[2/4] Running diarisation (this may take a while for long audio)...")
     diarization = diarization_pipeline(diarization_input)
 
+    # pyannote 4.x returns a DiarizeOutput wrapper; unwrap to the Annotation
+    if hasattr(diarization, "speaker_diarization"):
+        diarization = diarization.speaker_diarization
+
     # ── Step 3: Merge ─────────────────────────────────────────────────────────
     print("\n[3/4] Merging transcript with speaker labels...")
     chunks = asr_result.get("chunks", [])
