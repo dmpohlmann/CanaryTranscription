@@ -1,0 +1,5 @@
+transformers
+accelerate
+librosa
+pyannote.audio
+flash-attn
