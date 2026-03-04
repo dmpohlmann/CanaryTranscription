@@ -1,10 +1,20 @@
+"""
+RunPod-optimised transcription script.
+
+Identical pipeline to transcribe.py (Whisper large-v3 + pyannote diarization)
+but tuned for GPU pods: float16 inference, flash attention, batched decoding,
+and a --url flag so you can skip the Jupyter upload dance.
+"""
+
 import os
 import json
+import sys
 import torch
 import argparse
 import re
 import librosa
 import numpy as np
+import urllib.request
 from transformers import pipeline
 from pyannote.audio import Pipeline as DiarizationPipeline
 from pyannote.core import Segment
@@ -132,11 +142,37 @@ def format_transcript(merged_segments, speaker_names):
     return "\n".join(lines)
 
 
+def download_audio(url, dest_dir):
+    """Download an audio file from a URL into dest_dir. Returns the local path."""
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(exist_ok=True)
+
+    # Extract filename from URL, falling back to a default
+    filename = Path(urllib.request.urlparse(url).path).name or "download.mp3"
+    dest_path = dest_dir / filename
+
+    if dest_path.exists():
+        print(f"File already exists: {dest_path} — skipping download.")
+        return str(dest_path)
+
+    print(f"Downloading: {url}")
+    print(f"         to: {dest_path}")
+    urllib.request.urlretrieve(url, dest_path)
+    print(f"Download complete ({dest_path.stat().st_size / 1024 / 1024:.1f} MB)")
+    return str(dest_path)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def transcribe(audio_path: str, hf_token: str):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "No CUDA GPU detected. This script is designed for RunPod GPU pods. "
+            "Use transcribe.py for CPU-based local transcription."
+        )
+
+    device = "cuda"
+    print(f"Using device: {device} ({torch.cuda.get_device_name(0)})")
 
     input_filename = Path(audio_path).stem
     output_dir = Path("output")
@@ -150,11 +186,13 @@ def transcribe(audio_path: str, hf_token: str):
         with open(cache_path, "r", encoding="utf-8") as f:
             asr_result = json.load(f)
     else:
-        print("\n[1/4] Loading Whisper Large V3 model...")
+        print("\n[1/4] Loading Whisper Large V3 model (float16 + flash attention)...")
         asr_pipe = pipeline(
             "automatic-speech-recognition",
             model="openai/whisper-large-v3",
             device=device,
+            torch_dtype=torch.float16,
+            model_kwargs={"attn_implementation": "flash_attention_2"},
         )
 
         print(f"[1/4] Loading audio file: {audio_path}")
@@ -163,6 +201,7 @@ def transcribe(audio_path: str, hf_token: str):
         asr_result = asr_pipe(
             {"raw": audio_array, "sampling_rate": sampling_rate},
             return_timestamps=True,
+            batch_size=24,
             generate_kwargs={"language": "en"},
         )
 
@@ -235,11 +274,18 @@ def transcribe(audio_path: str, hf_token: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Transcribe an audio file and label speakers."
+        description="Transcribe an audio file and label speakers (RunPod GPU version)."
     )
     parser.add_argument(
         "audio",
-        help="Path to the audio file (e.g. audio/hearing.mp3)",
+        nargs="?",
+        default=None,
+        help="Path to the audio file (e.g. audio/hearing.mp3). "
+             "Optional if --url is provided.",
+    )
+    parser.add_argument(
+        "--url",
+        help="Download audio from this URL instead of using a local file path.",
     )
     parser.add_argument(
         "--hf-token",
@@ -255,4 +301,11 @@ if __name__ == "__main__":
             "Use --hf-token YOUR_TOKEN or set the HF_TOKEN environment variable."
         )
 
-    transcribe(args.audio, args.hf_token)
+    if args.url:
+        audio_path = download_audio(args.url, "audio")
+    elif args.audio:
+        audio_path = args.audio
+    else:
+        parser.error("Provide either an audio file path or --url.")
+
+    transcribe(audio_path, args.hf_token)
