@@ -79,17 +79,22 @@ def detect_speaker_names(merged_segments):
       - "Professor / Doctor / Secretary Jane Smith"
     """
     speaker_names = {}
+    # Case-insensitivity is scoped to the trigger phrases and titles via inline
+    # (?i:...) flags. The name-capture group stays case-sensitive so that its
+    # [A-Z][a-z]+ word boundary actually stops at the end of the name — a global
+    # re.IGNORECASE would let lowercase words ("and", "for") match as if
+    # capitalised, swallowing them into the detected name.
     name_patterns = [
-        r"(?:my name is|i(?:'m| am))\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})",
-        r"([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})[,.]?\s+for the record",
-        r"(?:senator|chair|secretary|professor|doctor|dr\.?)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,2})",
+        r"(?i:my name is|i'm|i am)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})",
+        r"([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})[,.]?\s+(?i:for the record)",
+        r"(?i:senator|chair|secretary|professor|doctor|dr\.?)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,2})",
     ]
     for segment in merged_segments:
         speaker = segment["speaker"]
         if speaker in speaker_names:
             continue
         for pattern in name_patterns:
-            match = re.search(pattern, segment["text"], re.IGNORECASE)
+            match = re.search(pattern, segment["text"])
             if match:
                 speaker_names[speaker] = match.group(1).title()
                 break
