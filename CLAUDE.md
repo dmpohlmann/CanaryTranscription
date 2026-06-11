@@ -25,7 +25,12 @@ There are no tests, linting, or build steps — this is a single-script tool.
 
 ## Architecture
 
-Everything lives in `transcribe.py`, which runs a 4-step pipeline:
+There are two entry-point scripts that share an identical 4-step pipeline and helper functions, differing only in device handling and ASR configuration:
+
+- **`transcribe.py`** — the portable version. Auto-selects CUDA if available, otherwise CPU. Use this for local/desktop runs.
+- **`transcribe_runpod.py`** — a GPU-tuned variant for RunPod pods. Hard-fails without CUDA, runs Whisper in `float16` with `flash_attention_2` and `batch_size=24` batched decoding, and adds a `--url` flag to download audio from a URL (skipping the Jupyter upload step). The pipeline logic is otherwise a verbatim copy of `transcribe.py`.
+
+The pipeline (both scripts):
 
 1. **ASR** — Loads `openai/whisper-large-v3` via `transformers.pipeline`, resamples audio to 16 kHz with `librosa`, and transcribes with word-level timestamps. Results are cached to `output/<filename>_asr_cache.json` so re-runs skip this expensive step.
 2. **Diarization** — Runs `pyannote/speaker-diarization-3.1` (requires a Hugging Face token with accepted model license) to identify who spoke when.
@@ -43,6 +48,11 @@ Output is written to `output/<filename>_diarised.txt`.
 
 ## Dependencies
 
-Core: `transformers`, `torch`, `torchaudio`, `librosa`, `pyannote.audio`, `accelerate`
+Two requirements files:
+- `requirements.txt` — the GPU/RunPod set: `transformers`, `accelerate`, `librosa`, `pyannote.audio`, `flash-attn`.
+- `requirements-cpu.txt` — CPU-only machines (no NVIDIA GPU). Same set minus `flash-attn`, plus explicit `torch`/`torchaudio`/`soundfile`, with guidance for installing the lean CPU PyTorch wheel. Use this for local desktop and the future Windows runs.
 
-Note: `requirements.txt` is currently empty — dependencies must be installed manually or the file needs updating.
+Notes:
+- `torch` is not listed explicitly — it is pulled in transitively by `transformers`/`pyannote.audio`. For a specific CUDA/CPU build, install `torch` first from the appropriate PyTorch index before `pip install -r requirements.txt`.
+- `flash-attn` is **GPU-only** and only used by `transcribe_runpod.py`. It will fail to build on a CPU-only machine and is not needed for `transcribe.py` — install the rest manually (or comment it out) for CPU setups.
+- The pipeline pre-decodes audio with `librosa` and includes monkeypatches to bypass `torchcodec` (in the transformers ASR pipeline) and pyannote's `AudioDecoder`. `ffmpeg` is still recommended so `librosa` can decode MP3 and other compressed formats.

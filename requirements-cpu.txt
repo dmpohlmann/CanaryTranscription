@@ -1,0 +1,27 @@
+# CPU-only dependencies for CanaryTranscription (machines without an NVIDIA GPU).
+# Use this for local desktop and Windows runs of transcribe.py.
+#
+# Install:
+#   python -m venv venv
+#   source venv/bin/activate          # Windows: venv\Scripts\activate
+#   pip install -r requirements-cpu.txt
+#
+# Notes:
+#  * flash-attn is intentionally omitted — it is GPU-only and only used by
+#    transcribe_runpod.py. It will not build on a CPU-only machine.
+#  * torch here comes from PyPI. On Windows the PyPI wheel is already CPU-only.
+#    On Linux the PyPI wheel is a CUDA build that still runs correctly on CPU
+#    (it simply never finds a GPU). To install the leaner CPU-only Linux wheel
+#    instead, first run — only works where download.pytorch.org is reachable —
+#        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#    and then run the pip install -r line above.
+#  * soundfile is listed explicitly: its bundled libsndfile decodes MP3/WAV/FLAC,
+#    so system ffmpeg is not required for common formats.
+
+torch
+torchaudio
+transformers
+accelerate
+librosa
+pyannote.audio
+soundfile

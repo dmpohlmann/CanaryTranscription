@@ -72,14 +72,23 @@ Your terminal prompt should now show `(venv)` at the start, confirming the envir
 pip install -r requirements.txt
 ```
 
+> **CPU-only machine (no NVIDIA GPU)?** Use `pip install -r requirements-cpu.txt`
+> instead — it omits the GPU-only `flash-attn` package (which won't build on CPU)
+> and installs a CPU-compatible PyTorch.
+
 This installs:
 
 | Package | Purpose |
 |---|---|
-| `transformers` | Hugging Face library — loads and runs the ASR model |
-| `torch` | PyTorch — the underlying deep learning framework |
-| `torchaudio` | Audio processing utilities for PyTorch |
+| `transformers` | Hugging Face library — loads and runs the Whisper ASR model |
 | `accelerate` | Optimises model performance on available hardware |
+| `librosa` | Decodes and resamples audio to 16 kHz before transcription |
+| `pyannote.audio` | Speaker diarisation — identifies who spoke when |
+| `flash-attn` | **GPU-only** fast attention, used by `transcribe_runpod.py` |
+
+> `torch` (PyTorch) is not pinned directly — it is pulled in automatically as a dependency. To control the CUDA vs CPU build, install `torch` first from the [PyTorch index](https://pytorch.org/get-started/locally/), then run the command above.
+
+> **`flash-attn` is GPU-only and will fail to build on a CPU-only machine.** For a CPU setup, install the other packages manually (or remove the `flash-attn` line) — it is only needed by the RunPod GPU script, not by `transcribe.py`.
 
 > First-time installation may take several minutes depending on connection speed.
 
@@ -87,7 +96,40 @@ This installs:
 
 ## Running a transcription
 
-> *[To be completed as the script is developed]*
+Speaker diarisation requires a free Hugging Face access token with the
+`pyannote/speaker-diarization-3.1` model licence accepted (visit the model page
+on huggingface.co and click *Agree* once while signed in).
+
+```bash
+# Pass the token on the command line...
+python transcribe.py audio/recording.mp3 --hf-token YOUR_TOKEN
+
+# ...or set it as an environment variable (preferred — keeps it out of shell history)
+export HF_TOKEN=YOUR_TOKEN        # Windows: set HF_TOKEN=YOUR_TOKEN
+python transcribe.py audio/recording.mp3
+```
+
+The script runs four steps — ASR (Whisper), diarisation (pyannote), merge, and
+name detection — and writes the result to `output/<filename>_diarised.txt`.
+
+> **ASR cache:** the slow transcription step is cached to
+> `output/<filename>_asr_cache.json`. Re-running the same file reuses the cache so
+> you can iterate on diarisation and formatting without re-transcribing. Delete the
+> cache file to force a fresh transcription.
+
+### Running on Linux / WSL
+
+The setup commands above are written for Windows. On Linux or WSL the equivalents are:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Install `ffmpeg` so `librosa` can decode MP3 and other compressed formats
+(`sudo apt install ffmpeg`). GPU acceleration under WSL additionally requires the
+NVIDIA driver installed on the **Windows** host — see *GPU acceleration* below.
 
 ---
 
@@ -96,11 +138,14 @@ This installs:
 ```
 CanaryTranscription/
 ├── venv/                  # Virtual environment (not committed to git)
-├── audio/                 # Place your MP3 files here
-├── output/                # Transcripts saved here
-├── transcribe.py          # Main transcription script
-├── requirements.txt       # Python dependencies
+├── audio/                 # Place your MP3 files here (not committed to git)
+├── output/                # Transcripts + ASR cache saved here (not committed to git)
+├── transcribe.py          # Main transcription script (CPU or GPU, auto-detected)
+├── transcribe_runpod.py   # GPU-tuned variant for RunPod pods (float16 + flash attention, --url download)
+├── requirements.txt       # Python dependencies (GPU / RunPod)
+├── requirements-cpu.txt   # Python dependencies (CPU-only machines)
 ├── .gitignore
+├── CLAUDE.md              # Guidance for Claude Code
 └── README.md
 ```
 
@@ -124,6 +169,8 @@ print(torch.cuda.is_available())
 ```
 
 If this returns `True`, the transcription script will automatically use the GPU. If `False`, it will fall back to CPU (slower but fully functional).
+
+> **WSL2:** CUDA inside WSL requires the NVIDIA driver to be installed on the **Windows host** (not inside WSL). Once it is, `nvidia-smi` becomes available inside WSL and `torch.cuda.is_available()` returns `True`. If `nvidia-smi` is missing inside WSL, the Windows-side driver is not installed or not WSL-enabled, and PyTorch will only see the CPU.
 
 > AMD GPU support via ROCm is possible but requires a different PyTorch installation — see [pytorch.org/get-started](https://pytorch.org/get-started/locally/) for details.
 
