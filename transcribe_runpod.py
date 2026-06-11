@@ -59,18 +59,33 @@ def get_speaker_for_segment(diarization, start, end):
 
 
 def merge_transcript_with_diarization(transcript_chunks, diarization):
-    """Merge Whisper timestamp chunks with pyannote speaker labels."""
+    """Merge Whisper timestamp chunks with pyannote speaker labels.
+
+    Drops chunks that carry no usable speech:
+      * missing timestamps,
+      * empty text after stripping,
+      * no diarised speaker (UNKNOWN) — i.e. pyannote found no one speaking in
+        that span. These are almost always non-speech regions (silence, noise)
+        where Whisper hallucinates filler such as "Thank you for watching", so
+        they are excluded from the speaker-labelled transcript. Real dialogue is
+        always attributed to a SPEAKER_xx label and is never dropped here.
+    """
     merged = []
     for chunk in transcript_chunks:
         start = chunk["timestamp"][0]
         end = chunk["timestamp"][1]
         if start is None or end is None:
             continue
+        text = chunk["text"].strip()
+        if not text:
+            continue
         speaker = get_speaker_for_segment(diarization, start, end)
+        if speaker == "UNKNOWN":
+            continue
         merged.append({
             "start": start,
             "end": end,
-            "text": chunk["text"].strip(),
+            "text": text,
             "speaker": speaker,
         })
     return merged
@@ -252,6 +267,10 @@ def transcribe(audio_path: str, hf_token: str):
     print("\n[3/4] Merging transcript with speaker labels...")
     chunks = asr_result.get("chunks", [])
     merged = merge_transcript_with_diarization(chunks, diarization)
+    dropped = len(chunks) - len(merged)
+    if dropped:
+        print(f"      Dropped {dropped} non-speech/empty segment(s) "
+              f"({len(chunks)} chunks -> {len(merged)} speaker segments).")
 
     # ── Step 4: Name detection and output ─────────────────────────────────────
     print("\n[4/4] Detecting speaker names from transcript...")

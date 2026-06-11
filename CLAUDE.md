@@ -34,7 +34,7 @@ The pipeline (both scripts):
 
 1. **ASR** — Loads `openai/whisper-large-v3` via `transformers.pipeline`, resamples audio to 16 kHz with `librosa`, and transcribes with word-level timestamps. Results are cached to `output/<filename>_asr_cache.json` so re-runs skip this expensive step.
 2. **Diarization** — Runs `pyannote/speaker-diarization-3.1` (requires a Hugging Face token with accepted model license) to identify who spoke when.
-3. **Merge** — Aligns Whisper's timestamped chunks with pyannote's speaker turns using overlap-based matching (`get_speaker_for_segment`).
+3. **Merge** — Aligns Whisper's timestamped chunks with pyannote's speaker turns using overlap-based matching (`get_speaker_for_segment`). Segments with empty text or no diarised speaker (`UNKNOWN`) are dropped — these are non-speech regions (silence/noise) where Whisper tends to hallucinate filler like "Thank you for watching", and pyannote correctly attributes no speaker to them.
 4. **Name detection** — Regex-based heuristics in `detect_speaker_names` scan the transcript for self-introductions (e.g., "my name is…", "Senator…", "…for the record") to replace generic `SPEAKER_XX` labels with real names.
 
 Output is written to `output/<filename>_diarised.txt`.
