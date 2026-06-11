@@ -122,14 +122,25 @@ name detection — and writes the result to `output/<filename>_diarised.txt`.
 The setup commands above are written for Windows. On Linux or WSL the equivalents are:
 
 ```bash
-python3 -m venv venv
+python3 -m venv venv          # or: uv venv --python 3.11 venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-cpu.txt
 ```
 
-Install `ffmpeg` so `librosa` can decode MP3 and other compressed formats
-(`sudo apt install ffmpeg`). GPU acceleration under WSL additionally requires the
-NVIDIA driver installed on the **Windows** host — see *GPU acceleration* below.
+`librosa` needs `ffmpeg` to decode **M4A/AAC** (and it's recommended for MP3 too).
+If you can't install system ffmpeg (e.g. no sudo), the bundled static binary works:
+
+```bash
+pip install imageio-ffmpeg
+ln -sf "$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" venv/bin/ffmpeg
+```
+
+GPU acceleration under WSL additionally requires the NVIDIA driver installed on
+the **Windows** host — see *GPU acceleration* below.
+
+**Convenience wrapper:** `./run.sh audio/recording.m4a` runs `transcribe.py` with
+`ffmpeg` on PATH and `HF_TOKEN` sourced from your stored `hf auth login` token, so
+you don't have to set them each time.
 
 ---
 
@@ -142,6 +153,7 @@ CanaryTranscription/
 ├── output/                # Transcripts + ASR cache saved here (not committed to git)
 ├── transcribe.py          # Main transcription script (CPU or GPU, auto-detected)
 ├── transcribe_runpod.py   # GPU-tuned variant for RunPod pods (float16 + flash attention, --url download)
+├── run.sh                 # Convenience wrapper for local runs (Linux/WSL)
 ├── requirements.txt       # Python dependencies (GPU / RunPod)
 ├── requirements-cpu.txt   # Python dependencies (CPU-only machines)
 ├── .gitignore
