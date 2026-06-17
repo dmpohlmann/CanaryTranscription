@@ -3,6 +3,7 @@ import json
 import torch
 import argparse
 import re
+import bisect
 import librosa
 import numpy as np
 from transformers import pipeline
@@ -21,6 +22,14 @@ _asr_module.is_torchcodec_available = lambda: False
 # Allowlist them so pyannote can load its segmentation model.
 torch.serialization.add_safe_globals([torch.torch_version.TorchVersion])
 
+# Whisper models for the two ASR passes. large-v3 gives accurate, punctuated
+# text. The word-level timestamp pass uses a small, fast model instead: those
+# timestamps are only used to locate speaker-change splits within a chunk, so
+# they don't need large-v3's accuracy — and large-v3 word-mode is pathologically
+# slow on CPU (forces eager cross-attention + DTW over a 1.5B model).
+PUNCT_MODEL = "openai/whisper-large-v3"
+WORD_TIMESTAMP_MODEL = "openai/whisper-base"
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -34,51 +43,144 @@ def format_time(seconds):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def get_speaker_for_segment(diarization, start, end):
-    """Find the dominant speaker for a given time segment by overlap."""
+def _flatten_turns(diarization):
+    """pyannote Annotation -> list of (start, end, speaker) turns, sorted."""
+    turns = [(turn.start, turn.end, spk)
+             for turn, _, spk in diarization.itertracks(yield_label=True)]
+    turns.sort()
+    return turns
+
+
+def _speaker_at(turns, t):
+    """Speaker talking at instant t, or UNKNOWN if no turn covers it."""
+    for start, end, spk in turns:
+        if start <= t < end:
+            return spk
+    return "UNKNOWN"
+
+
+def _dominant_speaker(turns, start, end):
+    """Speaker with the most overlap of [start, end], or UNKNOWN if none."""
     overlaps = {}
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
-        overlap_start = max(turn.start, start)
-        overlap_end = min(turn.end, end)
-        if overlap_end > overlap_start:
-            overlap = overlap_end - overlap_start
-            overlaps[speaker] = overlaps.get(speaker, 0) + overlap
+    for s, e, spk in turns:
+        lo, hi = max(s, start), min(e, end)
+        if hi > lo:
+            overlaps[spk] = overlaps.get(spk, 0) + (hi - lo)
     if not overlaps:
         return "UNKNOWN"
     return max(overlaps, key=overlaps.get)
 
 
-def merge_transcript_with_diarization(transcript_chunks, diarization):
-    """Merge Whisper timestamp chunks with pyannote speaker labels.
+def merge_chunks_with_diarization(punct_chunks, diarization):
+    """Default merge: assign each punctuated Whisper chunk to the speaker who
+    covers most of it, keeping the chunk whole. Chunks with empty text or no
+    diarised speaker (silence/hallucination) are dropped.
 
-    Drops chunks that carry no usable speech:
-      * missing timestamps,
-      * empty text after stripping,
-      * no diarised speaker (UNKNOWN) — i.e. pyannote found no one speaking in
-        that span. These are almost always non-speech regions (silence, noise)
-        where Whisper hallucinates filler such as "Thank you for watching", so
-        they are excluded from the speaker-labelled transcript. Real dialogue is
-        always attributed to a SPEAKER_xx label and is never dropped here.
+    Boundaries follow Whisper's ~5 s chunks, so a chunk spanning a speaker change
+    is attributed to whichever speaker dominates it — smoother output, but a turn
+    can start mid-sentence. Pass --word-snap for word-level boundary snapping.
     """
-    merged = []
-    for chunk in transcript_chunks:
-        start = chunk["timestamp"][0]
-        end = chunk["timestamp"][1]
-        if start is None or end is None:
+    turns = _flatten_turns(diarization)
+    segments = []
+    for chunk in punct_chunks:
+        ts = chunk.get("timestamp") or (None, None)
+        cs, ce = ts[0], ts[1]
+        if cs is None:
             continue
+        if ce is None or ce <= cs:
+            ce = cs + 0.20
         text = chunk["text"].strip()
         if not text:
             continue
-        speaker = get_speaker_for_segment(diarization, start, end)
+        speaker = _dominant_speaker(turns, cs, ce)
         if speaker == "UNKNOWN":
             continue
-        merged.append({
-            "start": start,
-            "end": end,
-            "text": text,
-            "speaker": speaker,
-        })
-    return merged
+        segments.append({"start": cs, "end": ce, "text": text, "speaker": speaker})
+    return segments
+
+
+def merge_punctuated_with_diarization(punct_chunks, word_chunks, diarization):
+    """Hybrid merge: keep the punctuated chunk-level text, but cut each chunk at
+    pyannote speaker boundaries using the word-level timestamps to find where
+    inside the chunk each boundary falls.
+
+    Two ASR passes feed this:
+      * punct_chunks — chunk-level pass (return_timestamps=True): ~5 s chunks of
+        properly punctuated, capitalised text, but with coarse boundaries.
+      * word_chunks  — word-level pass (return_timestamps="word"): one bare token
+        per word, but with precise per-word start times.
+
+    A chunk wholly inside one speaker turn is emitted unchanged (punctuation
+    intact). A chunk that straddles a speaker change is split: the count of
+    word-level words spoken before the boundary time gives the fraction of the
+    chunk's words to assign to the first speaker, so the punctuation-bearing text
+    is divided at the right place rather than reconstructed from bare tokens.
+    Sub-segments with no speaker (UNKNOWN) are dropped — this also removes
+    Whisper's hallucinated filler over trailing silence.
+    """
+    turns = _flatten_turns(diarization)
+    word_starts = sorted(
+        w["timestamp"][0] for w in word_chunks
+        if w.get("timestamp") and w["timestamp"][0] is not None
+    )
+
+    segments = []
+    for chunk in punct_chunks:
+        ts = chunk.get("timestamp") or (None, None)
+        cs, ce = ts[0], ts[1]
+        if cs is None:
+            continue
+        if ce is None or ce <= cs:
+            ce = cs + 0.20
+        words = chunk["text"].split()
+        if not words:
+            continue
+        n = len(words)
+
+        # Speaker covering most of the chunk. If nobody is diarised as speaking
+        # anywhere in the chunk, it is non-speech (silence/noise) where Whisper
+        # hallucinates filler — drop the whole chunk. Otherwise the chunk is real
+        # speech, so its words are never dropped, only attributed.
+        dominant = _dominant_speaker(turns, cs, ce)
+        if dominant == "UNKNOWN":
+            continue
+
+        # Speaker-change times strictly inside the chunk are the split points.
+        cuts = sorted({t for s, e, _ in turns for t in (s, e) if cs < t < ce})
+        bounds = [cs] + cuts + [ce]
+
+        # How many word-level words fall in this chunk's span — used to locate
+        # the splits by actual word density rather than by clock time alone.
+        lo = bisect.bisect_left(word_starts, cs)
+        total = bisect.bisect_left(word_starts, ce) - lo
+
+        prev = 0
+        for i in range(len(bounds) - 1):
+            a, b = bounds[i], bounds[i + 1]
+            # A sub-segment inside a real-speech chunk that lands in a diarisation
+            # gap falls back to the chunk's dominant speaker rather than being
+            # dropped, so no real words are lost at boundary slivers.
+            speaker = _speaker_at(turns, (a + b) / 2)
+            if speaker == "UNKNOWN":
+                speaker = dominant
+            if i == len(bounds) - 2:
+                end = n  # last sub-segment takes the remaining words
+            elif total > 0:
+                end = round((bisect.bisect_left(word_starts, b) - lo) / total * n)
+            else:
+                end = round((b - cs) / (ce - cs) * n)
+            end = max(prev, min(end, n))
+            sub = words[prev:end]
+            prev = end
+            if not sub:
+                continue
+            segments.append({
+                "start": a,
+                "end": b,
+                "text": " ".join(sub),
+                "speaker": speaker,
+            })
+    return segments
 
 
 def detect_speaker_names(merged_segments):
@@ -154,41 +256,78 @@ def format_transcript(merged_segments, speaker_names):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def transcribe(audio_path: str, hf_token: str):
+def transcribe(audio_path: str, hf_token: str, word_snap: bool = False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
+    if word_snap:
+        print("Word-snap enabled: turn boundaries will snap to speaker changes.")
 
     input_filename = Path(audio_path).stem
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
-    cache_path = output_dir / f"{input_filename}_asr_cache.json"
+    # Two caches, one per ASR pass. Delete a cache file to force that pass to
+    # re-run. The punctuated pass supplies readable text; the word pass supplies
+    # the precise per-word times used to snap turn boundaries (see the hybrid
+    # merge below).
+    chunk_cache = output_dir / f"{input_filename}_asr_cache.json"   # punctuated text
+    word_cache = output_dir / f"{input_filename}_asr_words.json"    # word timestamps
 
-    # ── Step 1: Transcription (with checkpointing) ────────────────────────────
-    if cache_path.exists():
-        print(f"\n[1/4] Found cached transcription — skipping ASR step.")
-        print(f"      Delete {cache_path} to force re-transcription.")
-        with open(cache_path, "r", encoding="utf-8") as f:
-            asr_result = json.load(f)
+    # ── Step 1: Transcription — two passes, with checkpointing ─────────────────
+    # Lazy loaders so a fully-cached run touches neither the model nor the audio.
+    _state = {"audio": None, "pipes": {}}
+
+    def load_audio():
+        if _state["audio"] is None:
+            print(f"[1/4] Loading audio file: {audio_path}")
+            _state["audio"], _ = librosa.load(audio_path, sr=16000, mono=True)
+        return _state["audio"]
+
+    def load_pipe(model_id):
+        if model_id not in _state["pipes"]:
+            print(f"[1/4] Loading ASR model: {model_id}")
+            _state["pipes"][model_id] = pipeline(
+                "automatic-speech-recognition",
+                model=model_id,
+                device=device,
+            )
+        return _state["pipes"][model_id]
+
+    # Pass A — large-v3, chunk-level, for punctuated/capitalised text.
+    if chunk_cache.exists():
+        print("\n[1/4] Found cached punctuated transcript — skipping chunk-level ASR.")
+        with open(chunk_cache, "r", encoding="utf-8") as f:
+            punct_result = json.load(f)
     else:
-        print("\n[1/4] Loading Whisper Large V3 model...")
-        asr_pipe = pipeline(
-            "automatic-speech-recognition",
-            model="openai/whisper-large-v3",
-            device=device,
-        )
-
-        print(f"[1/4] Loading audio file: {audio_path}")
-        audio_array, sampling_rate = librosa.load(audio_path, sr=16000, mono=True)
-        print(f"[1/4] Transcribing ({len(audio_array)/sampling_rate/3600:.1f} hours of audio)...")
-        asr_result = asr_pipe(
-            {"raw": audio_array, "sampling_rate": sampling_rate},
+        print(f"\n[1/4] Transcribing for punctuated text ({PUNCT_MODEL})...")
+        audio = load_audio()
+        punct_result = load_pipe(PUNCT_MODEL)(
+            {"raw": audio, "sampling_rate": 16000},
             return_timestamps=True,
             generate_kwargs={"language": "en"},
         )
+        with open(chunk_cache, "w", encoding="utf-8") as f:
+            json.dump(punct_result, f, ensure_ascii=False, indent=2)
 
-        print(f"[1/4] Transcription complete — saving cache to {cache_path}")
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(asr_result, f, ensure_ascii=False, indent=2)
+    # Pass B — only for --word-snap: a small fast model gives per-word times used
+    # to snap turn boundaries. Skipped entirely by default.
+    word_result = None
+    if word_snap:
+        if word_cache.exists():
+            print("[1/4] Found cached word timestamps — skipping word-level ASR.")
+            with open(word_cache, "r", encoding="utf-8") as f:
+                word_result = json.load(f)
+        else:
+            print(f"[1/4] Transcribing for word timestamps ({WORD_TIMESTAMP_MODEL})...")
+            audio = load_audio()
+            # chunk_length_s=30 keeps the word-level alignment memory bounded.
+            word_result = load_pipe(WORD_TIMESTAMP_MODEL)(
+                {"raw": audio, "sampling_rate": 16000},
+                return_timestamps="word",
+                chunk_length_s=30,
+                generate_kwargs={"language": "en"},
+            )
+            with open(word_cache, "w", encoding="utf-8") as f:
+                json.dump(word_result, f, ensure_ascii=False, indent=2)
 
     # ── Step 2: Diarisation ───────────────────────────────────────────────────
     print("\n[2/4] Loading speaker diarisation model...")
@@ -225,13 +364,17 @@ def transcribe(audio_path: str, hf_token: str):
         diarization = diarization.speaker_diarization
 
     # ── Step 3: Merge ─────────────────────────────────────────────────────────
-    print("\n[3/4] Merging transcript with speaker labels...")
-    chunks = asr_result.get("chunks", [])
-    merged = merge_transcript_with_diarization(chunks, diarization)
-    dropped = len(chunks) - len(merged)
-    if dropped:
-        print(f"      Dropped {dropped} non-speech/empty segment(s) "
-              f"({len(chunks)} chunks -> {len(merged)} speaker segments).")
+    punct_chunks = punct_result.get("chunks", [])
+    if word_snap:
+        print("\n[3/4] Merging punctuated text with speaker labels (word-snapped)...")
+        word_chunks = word_result.get("chunks", [])
+        merged = merge_punctuated_with_diarization(punct_chunks, word_chunks, diarization)
+        print(f"      {len(punct_chunks)} punctuated chunks -> {len(merged)} "
+              f"speaker-snapped segments.")
+    else:
+        print("\n[3/4] Merging transcript with speaker labels...")
+        merged = merge_chunks_with_diarization(punct_chunks, diarization)
+        print(f"      {len(punct_chunks)} punctuated chunks -> {len(merged)} segments.")
 
     # ── Step 4: Name detection and output ─────────────────────────────────────
     print("\n[4/4] Detecting speaker names from transcript...")
@@ -271,6 +414,13 @@ if __name__ == "__main__":
         help="Hugging Face API token. Can also be set as the HF_TOKEN environment variable "
              "(recommended — avoids token appearing in terminal history).",
     )
+    parser.add_argument(
+        "--word-snap",
+        action="store_true",
+        help="Snap turn boundaries to speaker changes using word-level timestamps "
+             "(more accurate boundaries, but choppier in rapid exchanges). Adds a "
+             "second, fast ASR pass. Default: chunk-level boundaries (smoother).",
+    )
     args = parser.parse_args()
 
     if not args.hf_token:
@@ -279,4 +429,4 @@ if __name__ == "__main__":
             "Use --hf-token YOUR_TOKEN or set the HF_TOKEN environment variable."
         )
 
-    transcribe(args.audio, args.hf_token)
+    transcribe(args.audio, args.hf_token, word_snap=args.word_snap)

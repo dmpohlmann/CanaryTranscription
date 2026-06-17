@@ -25,3 +25,4 @@ accelerate
 librosa
 pyannote.audio
 soundfile
+imageio-ffmpeg   # bundles a static ffmpeg binary for M4A/AAC decoding (no sudo)

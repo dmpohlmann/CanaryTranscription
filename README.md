@@ -112,6 +112,21 @@ python transcribe.py audio/recording.mp3
 The script runs four steps — ASR (Whisper), diarisation (pyannote), merge, and
 name detection — and writes the result to `output/<filename>_diarised.txt`.
 
+### Turn boundaries: `--word-snap`
+
+By default, each ~5-second Whisper chunk is attributed to whichever speaker talks
+most of it. This reads smoothly, but a turn can start mid-sentence when speakers
+change inside a chunk. Add `--word-snap` to split chunks at the exact speaker
+change using word-level timestamps:
+
+```bash
+python transcribe.py audio/recording.mp3 --word-snap
+```
+
+This gives more accurate turn boundaries (and keeps the punctuated text), at the
+cost of a second, fast ASR pass and choppier output during rapid back-and-forth.
+Recommended when precise attribution matters (e.g. who said what in a hearing).
+
 > **ASR cache:** the slow transcription step is cached to
 > `output/<filename>_asr_cache.json`. Re-running the same file reuses the cache so
 > you can iterate on diarisation and formatting without re-transcribing. Delete the
