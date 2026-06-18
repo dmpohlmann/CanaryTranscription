@@ -30,6 +30,10 @@ torch.serialization.add_safe_globals([torch.torch_version.TorchVersion])
 PUNCT_MODEL = "openai/whisper-large-v3"
 WORD_TIMESTAMP_MODEL = "openai/whisper-base"
 
+# On-device punctuation + truecasing model (ONNX, CPU-friendly) used by
+# --restore-punct to repair recordings Whisper transcribed lowercase/unpunctuated.
+PUNCT_RESTORE_MODEL = "pcs_en"
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -254,9 +258,45 @@ def format_transcript(merged_segments, speaker_names):
     return "\n".join(lines)
 
 
+def _punct_density(segments):
+    """Sentence-ending marks per word across all segment text (0 if no words)."""
+    text = " ".join(s["text"] for s in segments)
+    words = len(text.split())
+    marks = sum(text.count(c) for c in ".?!")
+    return (marks / words) if words else 1.0
+
+
+def restore_punctuation(segments, min_density=1 / 60):
+    """Repair lowercase/unpunctuated ASR output with an on-device punctuation +
+    truecasing model, in place. Skipped if the transcript is already adequately
+    punctuated (some recordings come out clean from Whisper, others don't), so
+    this can be applied to a whole batch without degrading the good ones.
+
+    Restores per segment to preserve speaker attribution. Returns True if it ran.
+    """
+    if _punct_density(segments) >= min_density:
+        print("      Transcript already punctuated — skipping restoration.")
+        return False
+    print(f"      Restoring punctuation/casing with {PUNCT_RESTORE_MODEL}...")
+    from punctuators.models import PunctCapSegModelONNX  # lazy: optional dependency
+    model = PunctCapSegModelONNX.from_pretrained(PUNCT_RESTORE_MODEL)
+    texts = [s["text"] for s in segments]
+    for seg, out in zip(segments, model.infer(texts)):
+        text = " ".join(out) if isinstance(out, list) else out
+        # The model emits <unk>/<Unk> for out-of-vocab tokens (e.g. hyphenated
+        # words); strip them (case-insensitively) and collapse whitespace rather
+        # than inserting a wrong character.
+        text = re.sub(r"<unk>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            seg["text"] = text
+    return True
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def transcribe(audio_path: str, hf_token: str, word_snap: bool = False):
+def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
+               restore_punct: bool = False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     if word_snap:
@@ -365,6 +405,11 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False):
 
     # ── Step 3: Merge ─────────────────────────────────────────────────────────
     punct_chunks = punct_result.get("chunks", [])
+    # Repair punctuation on the chunk text BEFORE merging/snapping, so the model
+    # sees sentence-level context. (Restoring tiny word-snap sub-segments mangles
+    # it — a fragment like "but" gets its own spurious sentence.)
+    if restore_punct:
+        restore_punctuation(punct_chunks)
     if word_snap:
         print("\n[3/4] Merging punctuated text with speaker labels (word-snapped)...")
         word_chunks = word_result.get("chunks", [])
@@ -421,6 +466,14 @@ if __name__ == "__main__":
              "(more accurate boundaries, but choppier in rapid exchanges). Adds a "
              "second, fast ASR pass. Default: chunk-level boundaries (smoother).",
     )
+    parser.add_argument(
+        "--restore-punct",
+        action="store_true",
+        help="Repair punctuation/capitalisation with an on-device model when "
+             "Whisper transcribed the recording lowercase/unpunctuated. Auto-skips "
+             "transcripts that are already adequately punctuated, so it's safe to "
+             "apply across a whole batch.",
+    )
     args = parser.parse_args()
 
     if not args.hf_token:
@@ -429,4 +482,5 @@ if __name__ == "__main__":
             "Use --hf-token YOUR_TOKEN or set the HF_TOKEN environment variable."
         )
 
-    transcribe(args.audio, args.hf_token, word_snap=args.word_snap)
+    transcribe(args.audio, args.hf_token, word_snap=args.word_snap,
+               restore_punct=args.restore_punct)

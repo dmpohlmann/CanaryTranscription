@@ -26,3 +26,4 @@ librosa
 pyannote.audio
 soundfile
 imageio-ffmpeg   # bundles a static ffmpeg binary for M4A/AAC decoding (no sudo)
+punctuators      # on-device punctuation + truecasing for --restore-punct

@@ -127,6 +127,20 @@ This gives more accurate turn boundaries (and keeps the punctuated text), at the
 cost of a second, fast ASR pass and choppier output during rapid back-and-forth.
 Recommended when precise attribution matters (e.g. who said what in a hearing).
 
+### Lowercase output: `--restore-punct`
+
+Whisper sometimes transcribes a recording almost entirely lowercase and
+unpunctuated (it's audio-dependent). `--restore-punct` repairs punctuation and
+capitalisation — including proper nouns — with a small on-device model:
+
+```bash
+python transcribe.py audio/recording.wav --word-snap --restore-punct
+```
+
+It auto-skips transcripts that are already well punctuated, so it's safe to add
+to every command in a batch — it only fires where it's needed. Expect occasional
+minor glitches (a miscased word, a stray sentence break); review the output.
+
 > **ASR cache:** the slow transcription step is cached to
 > `output/<filename>_asr_cache.json`. Re-running the same file reuses the cache so
 > you can iterate on diarisation and formatting without re-transcribing. Delete the

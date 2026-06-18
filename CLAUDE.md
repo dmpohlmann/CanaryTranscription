@@ -37,6 +37,8 @@ The pipeline (both scripts):
 3. **Merge** — Two modes. By default (`merge_chunks_with_diarization`), each punctuated chunk is assigned to the speaker who covers most of it (smoother, but a turn can start mid-sentence). With `--word-snap` (`merge_punctuated_with_diarization`), chunks are split at speaker-change boundaries using the word-level timestamps, so turns snap to who is actually speaking while keeping the punctuated text. Both drop whole chunks with empty text or no diarised speaker (`UNKNOWN`) — non-speech regions where Whisper hallucinates filler like "Thank you for watching"; word-snap keeps real words within a speech chunk by falling back to its dominant speaker.
 4. **Name detection** — Regex-based heuristics in `detect_speaker_names` scan the transcript for self-introductions (e.g., "my name is…", "Senator…", "…for the record") to replace generic `SPEAKER_XX` labels with real names.
 
+Optional `--restore-punct` (between steps 3 and 4) repairs punctuation/casing with an on-device model (`pcs_en` via `punctuators`) — some recordings come out of Whisper lowercase/unpunctuated. It runs on the **chunk** text before merging (so the model gets sentence-level context, not word-snap fragments) and auto-skips transcripts that are already adequately punctuated, so it's safe to apply across a whole batch.
+
 Output is written to `output/<filename>_diarised.txt`.
 
 ## Key conventions
