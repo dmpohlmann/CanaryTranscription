@@ -46,7 +46,7 @@ Output is written to `output/<filename>_diarised.txt`.
 - Audio files go in `audio/`, transcripts go in `output/` — both are gitignored
 - ASR caches (`_asr_cache.json` for punctuated text, `_asr_words.json` for word timestamps) enable iterating on diarization/formatting without re-running the slow transcription step; delete a cache file to force that pass to re-run
 - Device selection is automatic: CUDA GPU if available, otherwise CPU
-- The script uses `argparse` for CLI args; `--hf-token` or `HF_TOKEN` env var is required; `--word-snap` opts into word-level boundary snapping (default is smoother chunk-level boundaries)
+- The script uses `argparse` for CLI args; `--hf-token` or `HF_TOKEN` env var is required. Optional: `--word-snap` (word-level boundary snapping; default is smoother chunk-level), `--restore-punct` (repair lowercase/unpunctuated output; auto-skips clean transcripts), `--speakers N` (force the diariser to find exactly N speakers — e.g. `2` for a one-on-one — avoiding spurious extra speakers)
 - M4A/AAC audio needs `ffmpeg`; on a no-sudo box, `pip install imageio-ffmpeg` and symlink its binary into `venv/bin/ffmpeg`. `run.sh` wraps a local run (puts `ffmpeg` on PATH, sources `HF_TOKEN` from `hf auth login`)
 
 ## Dependencies

@@ -283,10 +283,14 @@ def restore_punctuation(segments, min_density=1 / 60):
     texts = [s["text"] for s in segments]
     for seg, out in zip(segments, model.infer(texts)):
         text = " ".join(out) if isinstance(out, list) else out
-        # The model emits <unk>/<Unk> for out-of-vocab tokens; strip them
-        # (case-insensitively) and collapse whitespace.
-        text = re.sub(r"<unk>", "", text, flags=re.IGNORECASE)
+        # The model emits <unk> for out-of-vocab tokens and corrupts that word
+        # (e.g. "Hello" -> "<unk>ello"); the original letters are unrecoverable
+        # from its output, so keep this item's ORIGINAL text rather than a damaged
+        # version. Lowercase but correct beats punctuated but wrong.
+        if "<unk>" in text.lower():
+            continue
         text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"([.,?!])[\s]*\1+", r"\1", text)  # collapse ",," / "??" etc.
         if text:
             seg["text"] = text
     return True
@@ -315,7 +319,7 @@ def download_audio(url, dest_dir):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
-               restore_punct: bool = False):
+               restore_punct: bool = False, num_speakers: int = None):
     if not torch.cuda.is_available():
         raise RuntimeError(
             "No CUDA GPU detected. This script is designed for RunPod GPU pods. "
@@ -326,6 +330,8 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
     print(f"Using device: {device} ({torch.cuda.get_device_name(0)})")
     if word_snap:
         print("Word-snap enabled: turn boundaries will snap to speaker changes.")
+    if num_speakers:
+        print(f"Diarisation constrained to exactly {num_speakers} speakers.")
 
     input_filename = Path(audio_path).stem
     output_dir = Path("output")
@@ -433,7 +439,9 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
     }
 
     print("[2/4] Running diarisation (this may take a while for long audio)...")
-    diarization = diarization_pipeline(diarization_input)
+    # num_speakers=None lets pyannote estimate the count; pass an int to force it
+    # (e.g. 2 for a one-on-one interview) and avoid spurious extra speakers.
+    diarization = diarization_pipeline(diarization_input, num_speakers=num_speakers)
 
     # pyannote 4.x returns a DiarizeOutput wrapper; unwrap to the Annotation
     if hasattr(diarization, "speaker_diarization"):
@@ -516,6 +524,13 @@ if __name__ == "__main__":
              "Whisper transcribed the recording lowercase/unpunctuated. Auto-skips "
              "transcripts that are already adequately punctuated.",
     )
+    parser.add_argument(
+        "--speakers",
+        type=int,
+        default=None,
+        help="Force the diariser to find exactly this many speakers (e.g. 2 for a "
+             "one-on-one interview). Default: let pyannote estimate.",
+    )
     args = parser.parse_args()
 
     if not args.hf_token:
@@ -532,4 +547,4 @@ if __name__ == "__main__":
         parser.error("Provide either an audio file path or --url.")
 
     transcribe(audio_path, args.hf_token, word_snap=args.word_snap,
-               restore_punct=args.restore_punct)
+               restore_punct=args.restore_punct, num_speakers=args.speakers)

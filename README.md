@@ -141,6 +141,19 @@ It auto-skips transcripts that are already well punctuated, so it's safe to add
 to every command in a batch — it only fires where it's needed. Expect occasional
 minor glitches (a miscased word, a stray sentence break); review the output.
 
+### Known speaker count: `--speakers`
+
+If you know how many people are in the recording, tell the diariser so it doesn't
+invent extra speakers:
+
+```bash
+python transcribe.py audio/interview.wav --speakers 2
+```
+
+`--speakers 2` is the common case for a one-on-one interview. Without it, pyannote
+estimates the count and can occasionally split one person into two (or add a
+phantom speaker from background noise).
+
 > **ASR cache:** the slow transcription step is cached to
 > `output/<filename>_asr_cache.json`. Re-running the same file reuses the cache so
 > you can iterate on diarisation and formatting without re-transcribing. Delete the
