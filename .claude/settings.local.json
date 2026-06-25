@@ -5,7 +5,12 @@
       "Bash(tee:*)",
       "mcp__claude_ai_Hugging_Face__hub_repo_details",
       "mcp__claude_ai_Hugging_Face__hf_whoami",
-      "WebSearch"
+      "WebSearch",
+      "Bash(command -v python3 python3.11 py)",
+      "Bash(venv/bin/ffmpeg -i audio/JFluin10-30-58.m4a)",
+      "Bash(:)",
+      "Bash(nohup ./run.sh audio/JFluin10-30-58.m4a)",
+      "Bash(echo \"started pid $!\")"
     ]
   },
   "outputStyle": "Explanatory"

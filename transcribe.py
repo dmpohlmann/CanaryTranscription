@@ -3,6 +3,7 @@ import json
 import torch
 import argparse
 import re
+import time
 import bisect
 import librosa
 import numpy as np
@@ -45,6 +46,21 @@ def format_time(seconds):
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def format_duration(seconds):
+    """Human-readable elapsed time for the timing summary.
+
+    Unlike format_time (HH:MM:SS, for transcript timestamps), this keeps
+    sub-second precision for fast steps so they don't all print as 00:00:00,
+    e.g. '1h 02m 03s', '4m 07s', '0.8s'.
+    """
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s"
 
 
 def _flatten_turns(diarization):
@@ -317,6 +333,14 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
     chunk_cache = output_dir / f"{input_filename}_asr_cache.json"   # punctuated text
     word_cache = output_dir / f"{input_filename}_asr_words.json"    # word timestamps
 
+    # Per-step wall-clock timing. mark() records a monotonic checkpoint after
+    # each step; consecutive diffs give per-step durations, printed at the end.
+    # Steps that hit a cache will show as near-instant, which is the point —
+    # it makes the cost of each pass visible across runs.
+    checkpoints = [("start", time.perf_counter())]
+    def mark(label):
+        checkpoints.append((label, time.perf_counter()))
+
     # ── Step 1: Transcription — two passes, with checkpointing ─────────────────
     # Lazy loaders so a fully-cached run touches neither the model nor the audio.
     _state = {"audio": None, "pipes": {}}
@@ -374,6 +398,8 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
             with open(word_cache, "w", encoding="utf-8") as f:
                 json.dump(word_result, f, ensure_ascii=False, indent=2)
 
+    mark("ASR (transcription)")
+
     # ── Step 2: Diarisation ───────────────────────────────────────────────────
     print("\n[2/4] Loading speaker diarisation model...")
     try:
@@ -410,6 +436,8 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
     if hasattr(diarization, "speaker_diarization"):
         diarization = diarization.speaker_diarization
 
+    mark("Diarisation")
+
     # ── Step 3: Merge ─────────────────────────────────────────────────────────
     punct_chunks = punct_result.get("chunks", [])
     # Repair punctuation on the chunk text BEFORE merging/snapping, so the model
@@ -428,6 +456,8 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
         merged = merge_chunks_with_diarization(punct_chunks, diarization)
         print(f"      {len(punct_chunks)} punctuated chunks -> {len(merged)} segments.")
 
+    mark("Merge")
+
     # ── Step 4: Name detection and output ─────────────────────────────────────
     print("\n[4/4] Detecting speaker names from transcript...")
     speaker_names = detect_speaker_names(merged)
@@ -444,10 +474,20 @@ def transcribe(audio_path: str, hf_token: str, word_snap: bool = False,
 
     output_path = output_dir / f"{input_filename}_diarised.txt"
     output_path.write_text(transcript, encoding="utf-8")
+    mark("Name detection + output")
 
     print(f"\nTranscription complete. Saved to: {output_path}")
     print("\n--- Preview (first 1000 characters) ---")
     print(transcript[:1000])
+
+    # ── Timing summary ────────────────────────────────────────────────────────
+    print("\n--- Timing ---")
+    prev = checkpoints[0][1]
+    for label, t in checkpoints[1:]:
+        print(f"  {label:<26} {format_duration(t - prev)}")
+        prev = t
+    total = checkpoints[-1][1] - checkpoints[0][1]
+    print(f"  {'TOTAL':<26} {format_duration(total)}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
