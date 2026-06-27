@@ -51,9 +51,10 @@ Output is written to `output/<filename>_diarised.txt`.
 
 ## Dependencies
 
-Two requirements files:
+Three requirements files:
 - `requirements.txt` — the GPU/RunPod set: `transformers`, `accelerate`, `librosa`, `pyannote.audio`, `flash-attn`.
 - `requirements-cpu.txt` — CPU-only machines (no NVIDIA GPU). Same set minus `flash-attn`, plus explicit `torch`/`torchaudio`/`soundfile`, with guidance for installing the lean CPU PyTorch wheel. Use this for local desktop and the future Windows runs.
+- `requirements-runpod.txt` — for the official "RunPod PyTorch 2.x" template, which already ships torch + CUDA. Omits both `torch` (inherit it from the image via `python -m venv --system-site-packages`) and `flash-attn` (unused; avoids a long, often-failing source build). `setup-runpod.sh` automates the whole setup: installs ffmpeg, creates a venv + HF cache on the persistent network volume (`/workspace`), and pip-installs this file.
 
 Notes:
 - `torch` is not listed explicitly — it is pulled in transitively by `transformers`/`pyannote.audio`. For a specific CUDA/CPU build, install `torch` first from the appropriate PyTorch index before `pip install -r requirements.txt`.

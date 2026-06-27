@@ -1,0 +1,29 @@
+# GPU/RunPod dependencies for CanaryTranscription (transcribe_runpod.py).
+# For the official "RunPod PyTorch 2.x" template, which already ships torch +
+# CUDA — so torch is intentionally NOT listed here.
+#
+# Quick setup (creates a venv + HF cache on the persistent network volume):
+#   bash setup-runpod.sh
+#   source /workspace/venv/bin/activate
+#   python transcribe_runpod.py --url <audio-url>
+#
+# Or manually:
+#   apt-get update && apt-get install -y ffmpeg
+#   python -m venv --system-site-packages /workspace/venv   # inherit image torch
+#   /workspace/venv/bin/pip install -r requirements-runpod.txt
+#   export HF_HOME=/workspace/hf                             # persist model cache
+#
+# Notes:
+#  * flash-attn is intentionally omitted — transcribe_runpod.py uses sdpa
+#    attention (word-level timestamps need cross-attention weights flash-attn
+#    can't return), and flash-attn triggers a long, often-failing source build.
+#  * torch/torchaudio are intentionally omitted — they come from the RunPod
+#    PyTorch image. Create the venv with `--system-site-packages` so it sees
+#    them; installing torch here risks a CUDA mismatch and a multi-GB download.
+#  * ffmpeg is a system package (apt), used by librosa to decode M4A/AAC.
+
+transformers
+accelerate
+librosa
+pyannote.audio
+punctuators      # on-device punctuation + truecasing for --restore-punct
