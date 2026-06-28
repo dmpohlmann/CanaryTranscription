@@ -23,14 +23,22 @@
 #    them via --system-site-packages. Do NOT install or upgrade them: bumping
 #    torch alone strands the image's torchvision/torchaudio and triggers
 #    "operator torchvision::nms does not exist" on `import transformers`.
-#  * pyannote.audio is pinned to <4 ON PURPOSE. pyannote.audio 4.x requires
-#    torch>=2.8, which would force exactly that torch upgrade. The 3.x line
-#    works with the image's torch 2.4.1, and transcribe_runpod.py already
-#    supports the pyannote 3.x API (the use_auth_token fallback).
+#  * The three pins below (transformers<5, huggingface_hub<1.0, pyannote.audio<4)
+#    form ONE coherent generation. They are interlocking — do not relax one
+#    without the others:
+#      - pyannote.audio 4.x needs torch>=2.8, which would force a torch upgrade
+#        that strands the image's cu124 torchvision/torchaudio. So pin <4.
+#      - pyannote.audio 3.x talks to the Hub via the old `use_auth_token` arg,
+#        which huggingface_hub 1.x removed. So pin huggingface_hub<1.0.
+#      - transformers 5.x requires huggingface_hub>=1.5. So to keep hf_hub<1.0
+#        we must pin transformers<5 (4.x loads whisper-large-v3 identically).
+#    Net effect: everything stays on the image's torch 2.4.1+cu124, no torch
+#    download, no CUDA mismatch. transcribe_runpod.py supports the 3.x API.
 #  * ffmpeg is a system package (apt), used by librosa to decode M4A/AAC.
 
-transformers
+transformers<5       # 5.x needs huggingface_hub>=1.5, which breaks pyannote 3.x (see note)
 accelerate
 librosa
+huggingface_hub<1.0  # 1.x removed use_auth_token, which pyannote 3.x still uses
 pyannote.audio<4     # 4.x needs torch>=2.8; staying on 3.x keeps the image's torch 2.4.1
 punctuators          # on-device punctuation + truecasing for --restore-punct
